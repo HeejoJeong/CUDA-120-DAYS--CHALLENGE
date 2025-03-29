@@ -128,13 +128,42 @@ Below is the host code to measure and compare the execution times of the two ker
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
 #define TILE_WIDTH 32
 #define DATA_SIZE (TILE_WIDTH * TILE_WIDTH)
 
-__global__ void bankConflictKernel(float *input, float *output);
-__global__ void optimizedKernel(float *input, float *output);
+// Kernel that intentionally causes bank conflicts
+__global__ void bankConflictKernel(float *input, float *output) {
+    __shared__ float sharedData[TILE_WIDTH][TILE_WIDTH];
+
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int index = ty * TILE_WIDTH + tx;
+
+    // Access pattern causing bank conflicts
+    int conflictIndex = tx * 2 % TILE_WIDTH;  // Artificial non-optimal pattern
+    sharedData[ty][conflictIndex] = input[index];
+
+    __syncthreads();
+
+    output[index] = sharedData[ty][conflictIndex];
+}
+
+// Kernel that avoids bank conflicts by using a contiguous access pattern
+__global__ void optimizedKernel(float *input, float *output) {
+    __shared__ float sharedData[TILE_WIDTH][TILE_WIDTH];
+
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int index = ty * TILE_WIDTH + tx;
+
+    // Coalesced access pattern
+    sharedData[ty][tx] = input[index];
+
+    __syncthreads();
+
+    output[index] = sharedData[ty][tx];
+}
 
 int main() {
     size_t size = DATA_SIZE * sizeof(float);
@@ -159,14 +188,22 @@ int main() {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    // Run bank conflict kernel and measure time
+    // --- Warm-Up for Bank Conflict Kernel ---
+    bankConflictKernel<<<blocksPerGrid, threadsPerBlock>>>(d_input, d_output);
+    cudaDeviceSynchronize();
+
+    // Measure bankConflictKernel execution time
     cudaEventRecord(start);
     bankConflictKernel<<<blocksPerGrid, threadsPerBlock>>>(d_input, d_output);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&timeConflict, start, stop);
 
-    // Run optimized kernel and measure time
+    // --- Warm-Up for Optimized Kernel ---
+    optimizedKernel<<<blocksPerGrid, threadsPerBlock>>>(d_input, d_output);
+    cudaDeviceSynchronize();
+
+    // Measure optimizedKernel execution time
     cudaEventRecord(start);
     optimizedKernel<<<blocksPerGrid, threadsPerBlock>>>(d_input, d_output);
     cudaEventRecord(stop);
